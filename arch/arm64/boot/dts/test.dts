@@ -1,0 +1,202 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/dts-v1/;
+
+#include "meson-s4.dtsi"
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+
+/ {
+	model = "Tanix W2 S905W2 4GB Box";
+	compatible = "tanix,w2", "amlogic,s4";
+
+	aliases {
+		serial0 = &uart_B;
+		ethernet0 = &ethmac;
+	};
+
+	memory@00000000 {
+		device_type = "memory";
+		reg = <0x0 0x00000000 0x0 0xe0800000>;
+	};
+};
+
+&{/} {
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		ramoops@07400000 {
+			compatible = "ramoops";
+			reg = <0x0 0x07400000 0x0 0x00100000>;
+			record-size = <0x20000>;
+			console-size = <0x40000>;
+			ftrace-size = <0x80000>;
+			pmsg-size = <0x20000>;
+		};
+
+		logo_reserved: linux,meson-fb {
+			compatible = "shared-dma-pool";
+			reusable;
+			reg = <0x0 0x3f800000 0x0 0x00800000>;
+		};
+
+		codec_mm_cma: linux,codec_mm_cma {
+			compatible = "shared-dma-pool";
+			reusable;
+			size = <0x0 0x0d000000>;
+			alignment = <0x0 0x00400000>;
+			linux,contiguous-region;
+		};
+	};
+};
+
+&hdmitx {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&hdmitx_ddc_pins>;
+	
+	ports {
+		hdmitx_vpu_port: port {
+			hdmitx_vpu_out: endpoint {
+				remote-endpoint = <&vpu_hdmitx_in>;
+			};
+		};
+	};
+};
+
+&vpu {
+	status = "okay";
+	memory-region = <&logo_reserved>;
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			vpu_hdmitx_in: endpoint {
+				remote-endpoint = <&hdmitx_vpu_out>;
+			};
+		};
+	};
+};
+
+&gpu {
+	status = "okay";
+	mali-supply = <&vddcpu0>;
+};
+
+&sd_emmc_c {
+	status = "okay";
+	pinctrl-names = "default", "clk-gate";
+	pinctrl-0 = <&emmc_pins>, <&emmc_ds_pins>;
+	pinctrl-1 = <&emmc_clk_gate_pins>;
+
+	bus-width = <8>;
+	cap-mmc-highspeed;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+	max-frequency = <200000000>;
+	non-removable;
+	disable-wp;
+	
+	amlogic,tx-delay = <0xa>;
+};
+
+&sd_emmc_b {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdcard_pins>;
+	bus-width = <4>;
+	cap-sd-highspeed;
+	max-frequency = <100000000>;
+	disable-wp;
+	cd-gpios = <&gpio GPIOC_6 GPIO_ACTIVE_LOW>;
+};
+
+&ethmac {
+	status = "okay";
+	phy-mode = "rmii";
+	phy-handle = <&internal_ephy>;
+};
+
+&sd_emmc_a {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdio_pins>;
+	bus-width = <4>;
+	cap-sd-highspeed;
+	non-removable;
+
+	brcmf: wifi@1 {
+		reg = <1>;
+		compatible = "brcm,bcm4329-fmac"; 
+	};
+};
+
+&usb2_phy_v2 {
+	status = "okay";
+};
+
+&usb3_phy_v2 {
+	status = "okay";
+	phy-supply = <&usb2_phy_v2>;
+};
+
+&dwc3 {
+	status = "okay";
+	dr_mode = "host";
+};
+
+&i2c3 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c3_pins2>;
+	clock-frequency = <100000>;
+};
+
+&uart_B {
+	status = "okay";
+};
+
+
+&{/} {
+	sound {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "Tanix-W2-HDMI";
+
+		simple-audio-card,cpu {
+			sound-dai = <&aiu AIU_CPU_I2S>;
+		};
+
+		simple-audio-card,codec {
+			sound-dai = <&hdmitx>;
+		};
+	};
+};
+
+&aiu {
+	status = "okay";
+};
+
+&vdec {
+	status = "okay";
+	memory-region = <&codec_mm_cma>;
+};
+
+&uart_A {
+	status = "okay";
+	uart-has-rtscts;
+
+	bluetooth {
+		compatible = "amlogic,w150s1-bt";
+		shutdown-gpios = <&gpio GPIOX_17 GPIO_ACTIVE_HIGH>;
+		host-wakeup-gpios = <&gpio GPIOX_19 GPIO_ACTIVE_HIGH>;
+		vbat-supply = <&vddio_ao1v8>;
+	};
+};
+

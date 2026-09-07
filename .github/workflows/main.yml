@@ -1,0 +1,141 @@
+name: Build Tanix W2 Complete OS Image
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-all:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Step 1 - Checkout Source Code
+      uses: actions/checkout@v4
+      with:
+        ref: meson64-6.14
+
+    - name: Step 2 - Install Toolchain Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu device-tree-compiler debootstrap qemu-user-static binfmt-support parted dosfstools
+
+    - name: Step 3 - Compile Kernel 6.14 and Test DTB
+      run: |
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- dtbs modules Image -j$(nproc)
+        mkdir -p output/sys
+        mkdir -p output/lib/modules
+        cp arch/arm64/boot/Image output/sys/
+        cp arch/arm64/boot/dts/amlogic/test.dtb output/sys/dtb.img
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- INSTALL_MOD_PATH=output modules_install
+
+    - name: Step 4 - Compile Amlogic U-Boot Bootloader
+      run: |
+        git clone --depth 1 https://github.com
+        cd amlogic-boot-fip
+        mkdir -p build
+        cp ../arch/arm64/boot/Image build/
+        ./build-fip.sh s905w2
+        cd ..
+        cp amlogic-boot-fip/u-boot.bin output/sys/
+
+    - name: Step 5 - Create Ubuntu RootFS with XFCE4 and Tools
+      run: |
+        sudo mkdir -p rootfs
+        sudo debootstrap --arch=arm64 --foreign noble rootfs http://ubuntu.com
+        sudo cp /usr/bin/qemu-aarch64-static rootfs/usr/bin/
+        sudo chroot rootfs /debootstrap/debootstrap --second-stage
+        
+        cat << 'EOF' | sudo tee rootfs/setup.sh
+        export DEBIAN_FRONTEND=noninteractive
+        echo "nameserver 1.1.1.1" > /etc/resolv.conf
+        apt-get update
+        apt-get install -y software-properties-common
+        add-apt-repository -y main
+        add-apt-repository -y universe
+        add-apt-repository -y restricted
+        add-apt-repository -y multiverse
+        apt-get update
+        
+        apt-get install -y xubuntu-desktop xfce4-terminal lightdm network-manager \
+                           alsa-utils bluetooth bluez pulseaudio-module-bluetooth \
+                           nano vim curl wget htop zip unzip tar \
+                           sudo openssh-server net-tools iproute2 pciutils usbutils \
+                           --no-install-recommends
+                           
+        systemctl enable lightdm
+        systemctl enable NetworkManager
+        systemctl enable bluetooth
+        systemctl enable ssh
+        
+        useradd -m -s /bin/bash -g sudo -G adm,dialout,cdrom,audio,dip,video,plugdev tanix
+        echo "tanix:tanix" | chpasswd
+        echo "tanix-w2" > /etc/hostname
+        
+        cat << 'INNER' > /etc/rc.local
+        #!/bin/sh -e
+        if [ ! -f /var/lib/resize_done ]; then
+          p1_start=\$(parted -m /dev/mmcblk1 unit s print | grep "^1:" | cut -d: -f2 | sed 's/s//')
+          if [ -z "\$p1_start" ]; then
+            p1_start=\$(parted -m /dev/sda unit s print | grep "^1:" | cut -d: -f2 | sed 's/s//')
+            dev="/dev/sda"
+          else
+            dev="/dev/mmcblk1"
+          fi
+          if [ ! -z "\$p1_start" ]; then
+            parted -s \$dev resizepart 1 100%
+            resize2fs \${dev}p1 || resize2fs \${dev}1
+            touch /var/lib/resize_done
+          fi
+        fi
+        exit 0
+        INNER
+        chmod +x /etc/rc.local
+        systemctl enable rc-local || true
+        rm -f /setup.sh
+        EOF
+        
+        sudo chmod +x rootfs/setup.sh
+        sudo chroot rootfs /setup.sh
+        sudo rm -f rootfs/usr/bin/qemu-aarch64-static
+
+    - name: Step 6 - Assemble Single Partition OS Image with Boot Config
+      run: |
+        dd if=/dev/zero of=tanix-w2-ubuntu6.14.img bs=1M count=3800
+        sudo parted -s tanix-w2-ubuntu6.14.img mklabel msdos
+        sudo parted -s tanix-w2-ubuntu6.14.img mkpart primary ext4 16MiB 100%
+        
+        LOOP_DEV=$(sudo losetup -fP --show tanix-w2-ubuntu6.14.img)
+        sudo mkfs.ext4 -L "ROOTFS" ${LOOP_DEV}p1
+        
+        mkdir -p mnt/rootfs
+        sudo mount ${LOOP_DEV}p1 mnt/rootfs
+        
+        sudo cp -r rootfs/* mnt/rootfs/
+        sudo cp output/sys/Image mnt/rootfs/Image
+        sudo cp output/sys/dtb.img mnt/rootfs/dtb.img
+        sudo mkdir -p mnt/rootfs/lib/modules
+        sudo cp -r output/lib/modules/* mnt/rootfs/lib/modules/
+        
+        sudo mkdir -p mnt/rootfs/boot/extlinux
+        cat << 'EOF' | sudo tee mnt/rootfs/boot/extlinux/extlinux.conf
+        LABEL Ubuntu6.14
+          MENU LABEL Ubuntu 24.04 Linux 6.14 XFCE4
+          LINUX /Image
+          FDT /dtb.img
+          APPEND root=LABEL=ROOTFS rootwait rootdelay=10 console=ttyAML0,115200n8 console=tty1 earlycon systemd.debug_shell=true rw fsck.repair=yes
+        EOF
+        
+        sudo dd if=output/sys/u-boot.bin of=${LOOP_DEV} conv=fsync,notrunc bs=512 seek=1
+        
+        sudo umount mnt/rootfs
+        sudo losetup -d ${LOOP_DEV}
+
+    - name: Step 7 - Compress and Upload Image Artifact
+      run: |
+        tar -cvzf tanix-w2-ubuntu6.14.img.tar.gz tanix-w2-ubuntu6.14.img
+
+    - name: Step 8 - Deploy Artifact to GitHub
+      uses: actions/upload-artifact@v4
+      with:
+        name: Tanix-W2-Ubuntu-6.14-SinglePartition
+        path: tanix-w2-ubuntu6.14.img.tar.gz
